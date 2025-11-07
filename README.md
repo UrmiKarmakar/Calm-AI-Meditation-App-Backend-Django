@@ -1,82 +1,18 @@
-# CalmAI Meditation App
-CalmAI is an AI-powered meditation and mindfulness assistant that generates personalized, emotionally resonant guided sessions. It combines GPT-4o for script generation, ElevenLabs for voice synthesis, and ambient background mixing to deliver immersive, calming audio experiences tailored to your mood.
+# 🧘 Calm AI — Emotionally Tuned Meditation Generator
+Calm AI is a modular, AI-powered meditation backend built with Django. It generates personalized meditation sessions by combining natural language generation, expressive voice synthesis, and ambient sound mixing. Designed for mobile integration, Calm AI delivers immersive, emotionally resonant audio experiences tailored to the user's mood and intention.
 
-# Features
-Personalized meditation scripts using OpenAI GPT-4o
-Natural voice synthesis with ElevenLabs (Jess, Adam, etc.)
-Ambient background mixing (rain, forest, ocean, stream, wind)
-Full transparency: GPT-generated script returned with audio
-Multilingual support (Norwegian, Bengali, Hindi, more)
-FastAPI backend with modular, production-grade architecture
-Test scripts for mood-specific user flows
+At its core, Calm AI takes a user’s emotional state (like stress, sadness, or calm), a preferred voice (male or female), a background ambiance (like forest or rain), and a few words about how they’re feeling. It then generates a guided meditation script using OpenAI’s language model, converts that script into a soothing voice using ElevenLabs, and overlays it with ambient audio using Pydub. The result is a high-quality .mp3 file that can be streamed or downloaded by a mobile app.
 
-# Tech Stack
-Python 3.11+
+The system is built with modularity in mind. The meditation app contains three key components:
 
-FastAPI for backend API
+script_generator.py: Uses OpenAI to generate a meditation script based on the user's mood and input.
 
-OpenAI GPT-4o for meditation script generation
+tts_engine.py: Converts the script into voice using ElevenLabs, handling pauses and emotional tone.
 
-ElevenLabs TTS API for voice synthesis
+mixer.py: Mixes the voice with a looping background sound (e.g., forest, rain) to create a calming atmosphere.
 
-FFmpeg for audio mixing
+The Django backend exposes a single API endpoint: POST /api/generate/. This endpoint accepts a JSON payload with the user's mood, voice preference, background sound, and a short description of their current feelings. It returns a JSON response containing the path to the generated audio file and the structured script used to create it.
 
-Dotenv for environment management
+All generated sessions are saved in meditation/output/, and background audio files are stored in static/backgrounds/. The project uses .env for secure API key management, and the architecture is designed to be easily extendable — you can plug in new voices, moods, or background types with minimal changes.
 
-Run FastAPI Backend
-bash
-uvicorn backend.main:app --reload
-
-# Setup Instructions
-1. Clone the Repository
-bash
-git clone https://github.com/your-username/CalmAI.git
-cd CalmAI/calm_backend
-2. Create and Activate Virtual Environment
-bash
-python -m venv venv
-venv\Scripts\activate           # Windows
-source venv/bin/activate        # macOS/Linux
-3. Install Dependencies
-bash
-pip install -r ../requirements.txt
-4. Add .env File
-Create a .env file in calm_backend/:
-
-# Running Django Server
-From inside calm_backend/:
-
-bash
-python manage.py runserver
-
-Code
-Starting development server at http://127.0.0.1:8000/
-
-# Testing the API
-
-Using Postman or curl
-URL: http://127.0.0.1:8000/api/generate/
-
-Method: POST
-
-Headers: Content-Type: application/json
-
-Body:
-
-json
-{
-  "mood": "tired",
-  "voice": "female",
-  "background": "forest",
-  "answers": ""
-}
-Output Location
-After a successful request, check:
-
-Code
-calm_backend/backend/output/
-You’ll find:
-
-sessionX.mp3 → voice-only
-
-sessionX_final.mp3 → final mixed meditation session
+Calm AI is ideal for wellness apps, mental health tools, or any product that aims to deliver personalized, emotionally intelligent audio experiences. It’s built for clarity, control, and comfort — both for developers and end users.
