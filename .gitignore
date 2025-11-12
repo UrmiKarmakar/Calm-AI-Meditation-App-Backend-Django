@@ -7,3 +7,5 @@ __pycache__/
 
 # Ignore environment and secrets
 .env
+
+db.sqlite3

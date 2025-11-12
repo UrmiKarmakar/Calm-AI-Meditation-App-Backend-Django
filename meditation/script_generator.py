@@ -13,8 +13,9 @@ load_dotenv(find_dotenv(), override=True)
 logging.basicConfig(level=logging.INFO)
 
 # Constants
-WORDS_PER_MINUTE = 120  # ~500ms per word
+WORDS_PER_MINUTE = 120
 MS_PER_WORD = 60000 / WORDS_PER_MINUTE
+TARGET_MINUTES = 15
 
 def format_system_prompt() -> str:
     return (
@@ -24,12 +25,14 @@ def format_system_prompt() -> str:
         "- {\"type\": \"text\", \"content\": \"...\"}\n"
         "- {\"type\": \"pause\", \"duration\": \"<N> seconds\" or \"<N> minutes\"}\n\n"
         "Rules:\n"
-        "1. Before every pause, include a guiding instruction that clearly tells the listener what to do and for how long.\n"
-        "2. Mention durations naturally in the text (e.g. '...for 2 minutes.').\n"
+        "1. Every pause must be preceded by a guiding instruction that clearly tells the listener what to do and for how long.\n"
+        "2. Mention durations naturally in the text (e.g. '...for 30 seconds.','...for a while','...take some moment').\n"
         "3. Use pauses for breathing, reflection, or emotional settling — never silently.\n"
         "4. Use varied pause durations: short (5–10s), medium (15–30s), long (1–2min).\n"
-        "5. Maintain a gentle, emotionally attuned tone throughout.\n"
-        "6. Output only valid JSON — no markdown, no commentary, no extra text."
+        "5. Maintain a gentle, soft, slow, calm emotionally attuned tone throughout.\n"
+        "6. End with: 'Now take a deep breath... and gently return to the present moment.' followed by 'Your session has now gently come to an end.'\n"
+        "7. After the final line, do not add any more tokens.\n"
+        "8. Output only valid JSON — no markdown, no commentary, no extra text."
     )
 
 def estimate_duration(tokens: List[Dict]) -> float:
@@ -39,12 +42,11 @@ def estimate_duration(tokens: List[Dict]) -> float:
             try:
                 value, unit = token["duration"].split()
                 value = float(value)
-                unit = unit.lower()
-                if "minute" in unit:
+                if "minute" in unit.lower():
                     total_ms += value * 60000
-                elif "second" in unit:
+                elif "second" in unit.lower():
                     total_ms += value * 1000
-            except (ValueError, IndexError):
+            except Exception:
                 continue
         elif token["type"] == "text":
             word_count = len(token["content"].split())
@@ -52,40 +54,36 @@ def estimate_duration(tokens: List[Dict]) -> float:
     return round(total_ms / 60000, 2)
 
 def pad_tokens_to_duration(tokens: List[Dict], target_minutes: int) -> List[Dict]:
-    calm_prompts = [
-        "Now, inhale deeply through your nose for 5 seconds... exhale through your mouth for 5 seconds.",
-        "Stay here, simply breathing for some moment.. and feel it in your inside...",
-        "Let your body rest in stillness for one minute...",
-        "Take slow, gentle breaths for the next 30 seconds...",
-        "Allow your mind to soften — stay quiet for some moment...",
-        "Focus on your heart area... Breathe gently here for some times...",
-        "Let each exhale release what you no longer need... Stay here for one minute.",
-        "Notice your body becoming lighter... Continue breathing calmly for one minutes.",
-        "Stay here in peaceful silence for a while, simply observing your breath.",
-        "You are safe... and supported...",
-        "Let your breath guide you... to stillness...",
-        "You are present... You are calm... You are whole...",
-        "Thank yourself... for this moment of peace...",
-        "You are grounded... and calm...",
-        "Picture a warm light surrounding you...",
-        "Let this light fill your body with ease...",
-        "You are enough... just as you are...",
-        "Feel the gentle rhythm of your breath...",
+    # Stop padding if session has ended
+    if any("your session has now gently come to an end" in t.get("content", "").lower() for t in tokens):
+        return tokens
+
+    # Prompts with matching durations
+    padding_blocks = [
+        ("Let your breath guide you... Stay here for 30 seconds.", "30 seconds"),
+        ("Feel your body soften... Remain still for 1 minute.", "1 minute"),
+        ("Let go of tension... and breathe gently for 15 seconds.", "15 seconds"),
+        ("Stay present... and quiet for 10 seconds.", "10 seconds"),
+        ("Allow your thoughts to settle... for 20 seconds.", "20 seconds"),
+        ("Let your body rest... for 1 minute.", "1 minute"),
+        ("Stay in this peaceful silence... for 2 minutes.", "2 minutes"),
+        ("Breathe slowly... and stay here for 15 seconds.", "15 seconds"),
+        ("Let your breath anchor you... for 30 seconds.", "30 seconds")
     ]
 
     used = set()
-    shuffle(calm_prompts)
+    shuffle(padding_blocks)
 
     while estimate_duration(tokens) < target_minutes:
-        for line in calm_prompts:
-            if line not in used:
-                tokens.append({"type": "text", "content": line})
-                tokens.append({"type": "pause", "duration": "10 seconds"})
-                used.add(line)
+        for text, duration in padding_blocks:
+            if text not in used:
+                tokens.append({"type": "text", "content": text})
+                tokens.append({"type": "pause", "duration": duration})
+                used.add(text)
                 break
         else:
             used.clear()
-            shuffle(calm_prompts)
+            shuffle(padding_blocks)
         if estimate_duration(tokens) >= target_minutes:
             break
 
@@ -93,12 +91,13 @@ def pad_tokens_to_duration(tokens: List[Dict], target_minutes: int) -> List[Dict
 
 def fallback_tokens(mood: str, duration: int = 15) -> List[Dict]:
     logging.warning("Using fallback script for mood '%s'", mood)
+
     mood_opening = {
-        "tired": "Welcome... to your meditation session... I’m your guide today... You’ve carried so much — let’s gently lay it down together... This is your space to rest, to breathe, to soften...",
-        "sadness": "Welcome... to your meditation session... I’m here with you... In this quiet space, we’ll hold your feelings with care. You don’t need to be strong right now — just present, just real...",
-        "anxiety": "Welcome... to your meditation session... I’m your guide today... Let’s slow everything down. You’re safe here. Let your breath become your anchor... Feel the ground beneath you...",
-        "stress": "Welcome... to your meditation session... I’m here to help you release the tension you’ve been carrying... Let’s begin by softening your shoulders, unclenching your jaw, and finding ease in your breath...",
-        "calm": "Welcome... to your meditation session... I’m your guide today... Let’s deepen the stillness already within you... Feel the quiet expand with each breath..."
+        "tired": "Welcome... to your meditation session... I’m your guide today... You’ve carried so much — let’s gently lay it down together...",
+        "sadness": "Welcome... to your meditation session... I’m here with you... In this quiet space, we’ll hold your feelings with care...",
+        "anxiety": "Welcome... to your meditation session... I’m your guide today... Let’s slow everything down. You’re safe here...",
+        "stress": "Welcome... to your meditation session... I’m here to help you release the tension you’ve been carrying...",
+        "calm": "Welcome... to your meditation session... I’m your guide today... Let’s deepen the stillness already within you..."
     }
 
     mood = mood if mood in mood_opening else "calm"
@@ -106,30 +105,26 @@ def fallback_tokens(mood: str, duration: int = 15) -> List[Dict]:
     base = [
         {"type": "text", "content": mood_opening[mood]},
         {"type": "pause", "duration": "5 seconds"},
-        {"type": "text", "content": "Find a quiet space... Sit or lie down comfortably... Close your eyes... for 30 seconds..."},
+        {"type": "text", "content": "Take a slow breath in... and exhale gently... Stay here for 30 seconds."},
         {"type": "pause", "duration": "30 seconds"},
-        {"type": "text", "content": "Take a slow breath in through your nose... and exhale softly through your mouth... for one minutes..."},
-        {"type": "pause", "duration": "60 seconds"},
-        {"type": "text", "content": "Let your body settle... and your breath guide you... for 30 seconds..."},
+        {"type": "text", "content": "Let your body settle... and your breath guide you... Stay here for 1 minute."},
+        {"type": "pause", "duration": "1 minute"},
+        {"type": "text", "content": "Feel the tension gently melting away... Stay here for 30 seconds."},
         {"type": "pause", "duration": "30 seconds"},
-        {"type": "text", "content": "Feel the tension gently melting away...    for 30 seconds..."},
-        {"type": "pause", "duration": "30 seconds"},
-        {"type": "text", "content": "Now, stay here in peaceful silence... simply breathing... for 2 minutes..."},
-        {"type": "pause", "duration": "2 minutes"},
+        {"type": "text", "content": "Now, stay in peaceful silence... simply breathing... for 2 minutes."},
+        {"type": "pause", "duration": "2 minutes"}
     ]
 
     padded = pad_tokens_to_duration(base, duration)
     padded.extend([
-        {"type": "pause", "duration": "15 seconds"},
-        {"type": "text", "content": "Now take a deep breath... and gently return to the present moment..."},
-        {"type": "pause", "duration": "15 seconds"},
-        {"type": "text", "content": "Thank yourself... for this time of calm and care..."},
+        {"type": "text", "content": "Now take a deep breath... and gently return to the present moment."},
         {"type": "pause", "duration": "10 seconds"},
-        {"type": "text", "content": "Your session has now gently come to an end..."},
+        {"type": "text", "content": "Thank yourself... for this time of calm and care."},
+        {"type": "pause", "duration": "10 seconds"},
+        {"type": "text", "content": "Your session has now gently come to an end."},
         {"type": "pause", "duration": "10 seconds"}
     ])
     return padded
-
 
 def mood_prompt(mood: str, formatted_answers: str) -> str:
     mood_descriptions = {
@@ -150,6 +145,15 @@ def mood_prompt(mood: str, formatted_answers: str) -> str:
         f"Here are their answers:\n{formatted_answers}\n"
         "Format the output strictly as a JSON array of tokens — no markdown, no commentary, no extra text."
     )
+
+def trim_after_session_end(tokens: List[Dict]) -> List[Dict]:
+    for i, token in enumerate(tokens):
+        if (
+            token["type"] == "text"
+            and "your session has now gently come to an end" in token["content"].lower()
+        ):
+            return tokens[: i + 1]
+    return tokens
 
 def generate_script(mood: str, answers: Dict[str, str]) -> List[Dict]:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -173,12 +177,16 @@ def generate_script(mood: str, answers: Dict[str, str]) -> List[Dict]:
         )
         content = response.choices[0].message.content.strip()
         tokens = json.loads(content)
+
         if not tokens or not isinstance(tokens, list):
             raise ValueError("Invalid token structure")
 
         if estimate_duration(tokens) < duration * 0.9:
             tokens = pad_tokens_to_duration(tokens, duration)
 
+        tokens = trim_after_session_end(tokens)
+        final_duration = estimate_duration(tokens)
+        logging.info("Final script duration: %.2f minutes", final_duration)
         return tokens
 
     except Exception as e:
