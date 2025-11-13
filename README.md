@@ -16,3 +16,22 @@ The Django backend exposes a single API endpoint: POST /api/generate/. This endp
 All generated sessions are saved in meditation/output/, and background audio files are stored in static/backgrounds/. The project uses .env for secure API key management, and the architecture is designed to be easily extendable — you can plug in new voices, moods, or background types with minimal changes.
 
 Calm AI is ideal for wellness apps, mental health tools, or any product that aims to deliver personalized, emotionally intelligent audio experiences. It’s built for clarity, control, and comfort — both for developers and end users.
+
+For Testing: 
+    python manage.py runserver
+
+In Postman:
+Post:  http://127.0.0.1:8000/api/generate/
+In Body :
+{
+  "mood": "sadness",
+  "voice": "male",
+  "background": "ocean",
+  "answers": {
+    "What’s making you feel sad?": "Loneliness",
+    "What helps you feel comforted?": "Connection",
+    "What does your heart need right now?": "Compassion",
+    "What helps you express your emotions?": "Crying",
+    "What’s one kind thing you can say to yourself?": "I’m allowed to feel"
+  }
+}
