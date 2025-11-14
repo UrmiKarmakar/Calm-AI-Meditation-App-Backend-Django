@@ -28,23 +28,26 @@ VOICE_MAP = {
     }
 }
 
+# Base output directory (inside meditation/services/output)
+BASE_DIR = Path(__file__).resolve().parent  # points to meditation/services
+OUTPUT_DIR = BASE_DIR / "output"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
 # Session counter file path
-SESSION_COUNTER_PATH = os.path.join("meditation", "output", "session_counter.txt")
+SESSION_COUNTER_PATH = OUTPUT_DIR / "session_counter.txt"
 
 def get_next_session_number() -> int:
-    if not os.path.exists(SESSION_COUNTER_PATH):
-        with open(SESSION_COUNTER_PATH, "w") as f:
-            f.write("1")
+    """Increment and return the next session number."""
+    if not SESSION_COUNTER_PATH.exists():
+        SESSION_COUNTER_PATH.write_text("1")
         return 1
-    with open(SESSION_COUNTER_PATH, "r+") as f:
-        current = int(f.read().strip())
-        next_num = current + 1
-        f.seek(0)
-        f.write(str(next_num))
-        f.truncate()
-        return next_num
+    current = int(SESSION_COUNTER_PATH.read_text().strip() or "0")
+    next_num = current + 1
+    SESSION_COUNTER_PATH.write_text(str(next_num))
+    return next_num
 
 def parse_duration(duration_str: str) -> int:
+    """Convert '30 seconds' or '1 minute' into milliseconds."""
     try:
         value = float(duration_str.split()[0])
         unit = duration_str.lower()
@@ -54,11 +57,12 @@ def parse_duration(duration_str: str) -> int:
             return int(value * 1000)
         else:
             return int(value)
-    except Exception as e:
+    except Exception:
         logging.warning("Invalid pause format: %s", duration_str)
         return 1000
 
 def call_elevenlabs(text: str, voice_label: str = "female") -> str:
+    """Send text to ElevenLabs API and return path to temporary MP3 file."""
     voice_info = VOICE_MAP.get(voice_label.lower(), VOICE_MAP["female"])
     voice_id = voice_info["id"]
 
@@ -85,36 +89,31 @@ def call_elevenlabs(text: str, voice_label: str = "female") -> str:
         return f.name
 
 def synthesize_voice(tokens: List[Dict], voice_label: str = "female") -> str:
+    """Convert tokens (text + pauses) into a single MP3 file."""
     segments = []
 
     for token in tokens:
-        if token["type"] == "pause":
-            ms = parse_duration(token["duration"])
+        if token.get("type") == "pause":
+            ms = parse_duration(token.get("duration", "1 second"))
             segments.append(AudioSegment.silent(duration=ms))
-        elif token["type"] == "text":
-            mp3_path = call_elevenlabs(token["content"], voice_label)
+        elif token.get("type") == "text":
+            mp3_path = call_elevenlabs(token.get("content", ""), voice_label)
             if not mp3_path:
-                raise RuntimeError(f"Voice synthesis failed for: {token['content'][:40]}")
+                raise RuntimeError(f"Voice synthesis failed for: {token.get('content', '')[:40]}")
             segments.append(AudioSegment.from_file(mp3_path))
 
     if not segments:
         raise RuntimeError("No audio segments generated.")
 
+    # Concatenate all segments
     final_audio = segments[0]
     for seg in segments[1:]:
         final_audio += seg
 
-
-
-    BASE_DIR = Path(__file__).resolve().parent  # points to meditation/
-    output_dir = BASE_DIR / "output"
-    output_dir.mkdir(exist_ok=True)
-
-    os.makedirs(output_dir, exist_ok=True)
-
+    # Save final audio file with auto-incremented session number
     session_num = get_next_session_number()
-    out_path = output_dir / f"session{session_num}.mp3"
+    out_path = OUTPUT_DIR / f"session{session_num}.mp3"
     final_audio.export(str(out_path), format="mp3", bitrate="192k")
     logging.info("Final voice saved to: %s", out_path)
 
-    return out_path
+    return str(out_path)
