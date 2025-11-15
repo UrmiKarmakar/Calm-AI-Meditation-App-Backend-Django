@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from random import choice, shuffle
+from random import shuffle
 from typing import List, Dict
 from dotenv import load_dotenv, find_dotenv
 from openai import OpenAI
@@ -36,9 +36,10 @@ def format_system_prompt() -> str:
     )
 
 def estimate_duration(tokens: List[Dict]) -> float:
+    """Estimate total duration in minutes based on tokens."""
     total_ms = 0
     for token in tokens:
-        if token["type"] == "pause":
+        if token.get("type") == "pause":
             try:
                 value, unit = token["duration"].split()
                 value = float(value)
@@ -48,17 +49,16 @@ def estimate_duration(tokens: List[Dict]) -> float:
                     total_ms += value * 1000
             except Exception:
                 continue
-        elif token["type"] == "text":
-            word_count = len(token["content"].split())
+        elif token.get("type") == "text":
+            word_count = len(token.get("content", "").split())
             total_ms += word_count * MS_PER_WORD
     return round(total_ms / 60000, 2)
 
 def pad_tokens_to_duration(tokens: List[Dict], target_minutes: int) -> List[Dict]:
-    # Stop padding if session has ended
+    """Pad tokens with extra pauses until target duration is reached."""
     if any("your session has now gently come to an end" in t.get("content", "").lower() for t in tokens):
         return tokens
 
-    # Prompts with matching durations
     padding_blocks = [
         ("Let your breath guide you... Stay here for 30 seconds.", "30 seconds"),
         ("Feel your body soften... Remain still for 1 minute.", "1 minute"),
@@ -66,27 +66,28 @@ def pad_tokens_to_duration(tokens: List[Dict], target_minutes: int) -> List[Dict
         ("Stay present... and quiet for 10 seconds.", "10 seconds"),
         ("Allow your thoughts to settle... for 20 seconds.", "20 seconds"),
         ("Let your body rest... for 1 minute.", "1 minute"),
-        ("Stay in this peaceful silence... for 2 minutes.", "2 minutes"),
         ("Breathe slowly... and stay here for 15 seconds.", "15 seconds"),
         ("Let your breath anchor you... for 30 seconds.", "30 seconds")
     ]
 
-    used = set()
     shuffle(padding_blocks)
 
+    # Keep adding pauses until duration >= target_minutes
     while estimate_duration(tokens) < target_minutes:
-        for text, duration in padding_blocks:
-            if text not in used:
-                tokens.append({"type": "text", "content": text})
-                tokens.append({"type": "pause", "duration": duration})
-                used.add(text)
-                break
-        else:
-            used.clear()
-            shuffle(padding_blocks)
-        if estimate_duration(tokens) >= target_minutes:
-            break
+        text, duration = padding_blocks[0]
+        tokens.append({"type": "text", "content": text})
+        tokens.append({"type": "pause", "duration": duration})
+        shuffle(padding_blocks)  # reshuffle for variety
 
+    return tokens
+
+def trim_to_target(tokens: List[Dict], target_minutes: int, tolerance: float = 0.17) -> List[Dict]:
+    """
+    Trim tokens so final duration is within target ± tolerance (default ~10 seconds).
+    """
+    while estimate_duration(tokens) > target_minutes + tolerance and tokens:
+        # Remove last pause or text if overshooting
+        tokens.pop()
     return tokens
 
 def fallback_tokens(mood: str, duration: int = 15) -> List[Dict]:
@@ -136,7 +137,8 @@ def mood_prompt(mood: str, formatted_answers: str) -> str:
     }
 
     return (
-        f"You are a professional meditation coach creating a 15-minute guided session for someone feeling '{mood}'. "
+        f"You are a professional meditation coach creating a 15 minutes guided session for someone feeling '{mood}'. "
+        f"Session must be 15 minutes and should focus on {mood_descriptions.get(mood, 'general relaxation and mindfulness')}.\n"
         "Your voice should be soft, slow, and melodious — ideal for deep relaxation and emotional comfort. "
         "Your tone must be warm, grounded, and emotionally attuned. "
         "Include breath cues, natural pauses, and gentle transitions. "
@@ -149,8 +151,8 @@ def mood_prompt(mood: str, formatted_answers: str) -> str:
 def trim_after_session_end(tokens: List[Dict]) -> List[Dict]:
     for i, token in enumerate(tokens):
         if (
-            token["type"] == "text"
-            and "your session has now gently come to an end" in token["content"].lower()
+            token.get("type") == "text"
+            and "your session has now gently come to an end" in token.get("content", "").lower()
         ):
             return tokens[: i + 1]
     return tokens
@@ -160,7 +162,7 @@ def generate_script(mood: str, answers: Dict[str, str]) -> List[Dict]:
     if not OPENAI_API_KEY:
         raise ValueError("OPENAI_API_KEY is missing or not loaded")
 
-    duration = 15
+    duration = TARGET_MINUTES
     formatted_answers = "\n".join([f"{q}: {a}" for q, a in answers.items()])
     prompt = mood_prompt(mood, formatted_answers)
 
@@ -176,17 +178,30 @@ def generate_script(mood: str, answers: Dict[str, str]) -> List[Dict]:
             temperature=0.7
         )
         content = response.choices[0].message.content.strip()
-        tokens = json.loads(content)
 
-        if not tokens or not isinstance(tokens, list):
-            raise ValueError("Invalid token structure")
+        try:
+            tokens = json.loads(content)
+            if not isinstance(tokens, list):
+                raise ValueError("Invalid token structure")
+        except Exception as e:
+            logging.error("Invalid JSON from OpenAI: %s", e)
+            return fallback_tokens(mood, duration)
 
-        if estimate_duration(tokens) < duration * 0.9:
-            tokens = pad_tokens_to_duration(tokens, duration)
+        initial_duration = estimate_duration(tokens)
+        logging.info("Initial script duration: %.2f minutes", initial_duration)
 
+        # Pad once
+        tokens = pad_tokens_to_duration(tokens, duration)
+
+        # Trim overshoot to ~15:00 ± 10s
+        tokens = trim_to_target(tokens, duration)
+
+        # Trim after final "session end"
         tokens = trim_after_session_end(tokens)
+
         final_duration = estimate_duration(tokens)
         logging.info("Final script duration: %.2f minutes", final_duration)
+
         return tokens
 
     except Exception as e:

@@ -6,6 +6,7 @@ from typing import List, Dict
 from pydub import AudioSegment
 from dotenv import load_dotenv
 from pathlib import Path
+from django.conf import settings  # import Django settings for MEDIA_ROOT
 
 # Load .env from current working directory or project root
 load_dotenv()
@@ -28,9 +29,8 @@ VOICE_MAP = {
     }
 }
 
-# Base output directory (inside meditation/services/output)
-BASE_DIR = Path(__file__).resolve().parent  # points to meditation/services
-OUTPUT_DIR = BASE_DIR / "output"
+# Base output directory -> media/audio
+OUTPUT_DIR = Path(settings.MEDIA_ROOT) / "audio"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Session counter file path
@@ -88,8 +88,8 @@ def call_elevenlabs(text: str, voice_label: str = "female") -> str:
         logging.info("Synthesized voice for: %s", text[:40])
         return f.name
 
-def synthesize_voice(tokens: List[Dict], voice_label: str = "female") -> str:
-    """Convert tokens (text + pauses) into a single MP3 file."""
+def synthesize_voice(tokens: List[Dict], voice_label: str, session_num: int) -> str:
+    """Convert tokens (text + pauses) into a single MP3 file for given session_num."""
     segments = []
 
     for token in tokens:
@@ -105,13 +105,10 @@ def synthesize_voice(tokens: List[Dict], voice_label: str = "female") -> str:
     if not segments:
         raise RuntimeError("No audio segments generated.")
 
-    # Concatenate all segments
     final_audio = segments[0]
     for seg in segments[1:]:
         final_audio += seg
 
-    # Save final audio file with auto-incremented session number
-    session_num = get_next_session_number()
     out_path = OUTPUT_DIR / f"session{session_num}.mp3"
     final_audio.export(str(out_path), format="mp3", bitrate="192k")
     logging.info("Final voice saved to: %s", out_path)
