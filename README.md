@@ -1,4 +1,4 @@
-# 🧘 Calm AI — Emotionally Tuned Meditation Generator
+# Calm AI — Emotionally Tuned Meditation Generator
 Calm AI is a modular, AI-powered meditation backend built with Django. It generates personalized meditation sessions by combining natural language generation, expressive voice synthesis, and ambient sound mixing. Designed for mobile integration, Calm AI delivers immersive, emotionally resonant audio experiences tailored to the user's mood and intention.
 
 At its core, Calm AI takes a user’s emotional state (like stress, sadness, or calm), a preferred voice (male or female), a background ambiance (like forest or rain), and a few words about how they’re feeling. It then generates a guided meditation script using OpenAI’s language model, converts that script into a soothing voice using ElevenLabs, and overlays it with ambient audio using Pydub. The result is a high-quality .mp3 file that can be streamed or downloaded by a mobile app.
