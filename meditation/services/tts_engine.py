@@ -2,16 +2,14 @@ import os
 import logging
 import tempfile
 import requests
+import json
+import re
 from typing import List, Dict
 from pydub import AudioSegment
-from dotenv import load_dotenv
 from pathlib import Path
-from django.conf import settings  # import Django settings for MEDIA_ROOT
+from django.conf import settings
 
-# Load .env from current working directory or project root
-load_dotenv()
-
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+ELEVENLABS_API_KEY = settings.ELEVENLABS_API_KEY
 logging.basicConfig(level=logging.INFO)
 
 if not ELEVENLABS_API_KEY:
@@ -47,22 +45,31 @@ def get_next_session_number() -> int:
     return next_num
 
 def parse_duration(duration_str: str) -> int:
-    """Convert '30 seconds' or '1 minute' into milliseconds."""
+    """Convert flexible strings (e.g., '30 sec', '1.5 minutes') into ms."""
+    s = (duration_str or "").strip().lower()
     try:
-        value = float(duration_str.split()[0])
-        unit = duration_str.lower()
-        if "minute" in unit:
+        # Extract first numeric value
+        nums = re.findall(r'[\d\.]+', s)
+        value = float(nums[0]) if nums else 1.0
+        if "min" in s:
             return int(value * 60000)
-        elif "second" in unit:
+        if "sec" in s or "second" in s:
             return int(value * 1000)
-        else:
-            return int(value)
+        # Fallback keywords
+        if "half" in s and "minute" in s:
+            return 30000
+        if "quarter" in s and "minute" in s:
+            return 15000
     except Exception:
         logging.warning("Invalid pause format: %s", duration_str)
-        return 1000
+    return 1000
+
 
 def call_elevenlabs(text: str, voice_label: str = "female") -> str:
     """Send text to ElevenLabs API and return path to temporary MP3 file."""
+    if not ELEVENLABS_API_KEY or len(ELEVENLABS_API_KEY) < 10:
+        raise RuntimeError("ELEVENLABS_API_KEY missing or invalid. Check .env and settings.py.")
+
     voice_info = VOICE_MAP.get(voice_label.lower(), VOICE_MAP["female"])
     voice_id = voice_info["id"]
 
@@ -73,19 +80,32 @@ def call_elevenlabs(text: str, voice_label: str = "female") -> str:
     }
     payload = {
         "text": text,
-        "voice_settings": {
-            "stability": 0.75,
-            "similarity_boost": 0.85
-        }
+        "voice_settings": {"stability": 0.75, "similarity_boost": 0.85}
     }
 
-    response = requests.post(url, headers=headers, json=payload, stream=True)
-    response.raise_for_status()
+    try:
+        response = requests.post(url, headers=headers, json=payload, stream=True, timeout=30)
+    except requests.RequestException as e:
+        raise RuntimeError(f"ElevenLabs request failed: {e}")
+
+    if response.status_code == 401:
+        # Try to read error details from ElevenLabs
+        detail = ""
+        try:
+            detail = response.text or ""
+        except Exception:
+            pass
+        raise RuntimeError(f"ElevenLabs 401 Unauthorized. Check ELEVENLABS_API_KEY (user key required). Details: {detail}")
+
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as e:
+        raise RuntimeError(f"ElevenLabs HTTP error: {e}. Body: {response.text}")
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
         for chunk in response.iter_content(8192):
             f.write(chunk)
-        logging.info("Synthesized voice for: %s", text[:40])
+        logging.info("Synthesized voice for: %s", text[:60])
         return f.name
 
 def synthesize_voice(tokens: List[Dict], voice_label: str, session_num: int) -> str:
@@ -97,20 +117,25 @@ def synthesize_voice(tokens: List[Dict], voice_label: str, session_num: int) -> 
             ms = parse_duration(token.get("duration", "1 second"))
             segments.append(AudioSegment.silent(duration=ms))
         elif token.get("type") == "text":
-            mp3_path = call_elevenlabs(token.get("content", ""), voice_label)
-            if not mp3_path:
-                raise RuntimeError(f"Voice synthesis failed for: {token.get('content', '')[:40]}")
-            segments.append(AudioSegment.from_file(mp3_path))
+            try:
+                mp3_path = call_elevenlabs(token.get("content", ""), voice_label)
+                audio = AudioSegment.from_file(mp3_path)
+                os.remove(mp3_path)
+                segments.append(audio)
+            except Exception as e:
+                logging.error("TTS failed for text '%s': %s", token.get("content", "")[:40], e)
+                segments.append(AudioSegment.silent(duration=1000))
 
     if not segments:
         raise RuntimeError("No audio segments generated.")
 
-    final_audio = segments[0]
-    for seg in segments[1:]:
+    final_audio = AudioSegment.empty()
+    for seg in segments:
         final_audio += seg
 
     out_path = OUTPUT_DIR / f"session{session_num}.mp3"
     final_audio.export(str(out_path), format="mp3", bitrate="192k")
-    logging.info("Final voice saved to: %s", out_path)
+    logging.info("Final voice saved to: %s (duration: %.2f sec)", out_path, len(final_audio) / 1000.0)
+
 
     return str(out_path)

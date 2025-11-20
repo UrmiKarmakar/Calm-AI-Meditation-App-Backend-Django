@@ -35,3 +35,19 @@ In Body :
     "What’s one kind thing you can say to yourself?": "I’m allowed to feel"
   }
 }
+
+CalmAI Backend
+- Activate venv and install: pip install -r requirements.txt
+- Migrate: python manage.py makemigrations && python manage.py migrate
+- Run: python manage.py runserver
+
+API:
+- POST /api/auth/register
+- POST /api/auth/verify-otp
+- POST /api/auth/login
+- POST /api/meditation/generate
+- GET  /api/meditation/stats
+- GET  /api/meditation/sessions
+- POST /api/onboarding/submit (optional; empty body means skip)
+- GET  /api/onboarding/profile
+- PUT  /api/onboarding/profile/update

@@ -1,7 +1,11 @@
 Django>=5.2.8
+djangorestframework
+django-cors-headers
+python-dotenv
+requests
 openai
 pydub
-python-dotenv
 ffmpeg-python
-requests
 PyJWT
+cryptography
+whitenoise

@@ -4,23 +4,11 @@ from django.conf import settings
 from django.conf.urls.static import static
 
 urlpatterns = [
-    # Django admin
     path("admin/", admin.site.urls),
-
-    # Accounts app (authentication, onboarding, etc.)
-    # These will resolve to:
-    #   /api/auth/register
-    #   /api/auth/verify-otp
-    #   /api/auth/login
     path("api/auth/", include("accounts.urls")),
-
-    # Onboarding endpoint
-    #   /api/onboarding/submit
-    path("api/onboarding/", include("accounts.urls")),
-
-    # Meditation app
-    #   /api/meditation/generate
+    path("api/onboarding/", include("onboarding.urls")),
     path("api/meditation/", include("meditation.urls")),
+    path("api/admin/", include("adminpanel.urls")),
 ]
 
 # Serve media and static files in development

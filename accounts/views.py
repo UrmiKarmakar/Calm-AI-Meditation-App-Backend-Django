@@ -1,106 +1,206 @@
 import json
+import datetime
+from django.utils.crypto import get_random_string
+from django.utils.timezone import now
+from django.contrib.auth.hashers import make_password, check_password
 from django.http import JsonResponse
+from django.db.models import Q
 from django.views.decorators.csrf import csrf_exempt
-from django.contrib.auth import authenticate
-from django.conf import settings
-import jwt
-from datetime import datetime, timedelta
-from .models import User, OTPCode, UserProfile
 
-def send_otp_email(user, code):
-    send_mail("Your CalmAI verification code", f"Your 6-digit code is: {code}",
-              settings.DEFAULT_FROM_EMAIL, [user.email], fail_silently=True)
+from .models import CustomUser, OTPCode, PasswordResetOTP
+from common.jwt_utils import issue_jwt
 
+RESEND_SECONDS = 60
+
+
+def _json(request):
+    try:
+        return json.loads(request.body.decode("utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+
+def _latest_otp(model, user):
+    return model.objects.filter(user=user, is_used=False).order_by("-created_at").first()
+
+
+def _can_resend(latest):
+    if not latest:
+        return True
+    delta = (now() - latest.created_at).total_seconds()
+    return delta >= RESEND_SECONDS
+
+
+# Auth
 @csrf_exempt
 def register(request):
-    data = json.loads(request.body.decode("utf-8"))
-    email, password = data.get("email"), data.get("password")
-    if User.objects.filter(email=email).exists():
-        return JsonResponse({"error": "Email already registered"}, status=409)
-    user = User.objects.create_user(username=email, email=email, password=password, is_verified=False)
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    data = _json(request) or {}
+    username = data.get("name") or data.get("username")
+    email = data.get("email")
+    password = data.get("password")
+    confirm = data.get("confirm_password")
+
+    if not all([username, email, password, confirm]):
+        return JsonResponse({"error": "Missing fields"}, status=400)
+    if password != confirm:
+        return JsonResponse({"error": "Passwords do not match"}, status=400)
+    if CustomUser.objects.filter(Q(username=username) | Q(email=email)).exists():
+        return JsonResponse({"error": "Username or email already exists"}, status=409)
+
+    user = CustomUser.objects.create(
+        username=username,
+        email=email,
+        password=make_password(password),
+        role="user",
+        is_active=True,
+        is_staff=False,
+        is_superuser=False,
+        is_verified=False,
+    )
+
+    latest = _latest_otp(OTPCode, user)
+    if not _can_resend(latest):
+        remain = RESEND_SECONDS - int((now() - latest.created_at).total_seconds())
+        return JsonResponse({"error": "Resend too soon", "retry_in": remain}, status=429)
+
     code = get_random_string(6, allowed_chars="0123456789")
-    OTPCode.objects.create(user=user, code=code)
-    send_otp_email(user, code)
-    return JsonResponse({"message": "Registered. OTP sent to email."}, status=201)
+    OTPCode.objects.create(user=user, code=code, expires_at=now() + datetime.timedelta(minutes=10))
+    return JsonResponse({"message": "Registered. Verify OTP.", "otp_preview": code, "resend_after": RESEND_SECONDS}, status=201)
+
 
 @csrf_exempt
 def verify_otp(request):
-    data = json.loads(request.body.decode("utf-8"))
-    email, code = data.get("email"), data.get("code")
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    data = _json(request) or {}
+    email = data.get("email")
+    code = data.get("otp") or data.get("code")
+    if not email or not code:
+        return JsonResponse({"error": "Missing email or code"}, status=400)
     try:
-        user = User.objects.get(email=email)
-    except User.DoesNotExist:
+        user = CustomUser.objects.get(email=email)
+    except CustomUser.DoesNotExist:
         return JsonResponse({"error": "User not found"}, status=404)
-    otp = OTPCode.objects.filter(user=user, code=code, is_used=False).first()
+
+    otp = OTPCode.objects.filter(user=user, code=code, is_used=False).order_by("-created_at").first()
     if not otp:
-        return JsonResponse({"error": "Invalid or expired code"}, status=400)
-    otp.is_used = True; otp.save()
-    user.is_verified = True; user.save()
-    return JsonResponse({"message": "Email verified. You can login now."})
+        return JsonResponse({"error": "Invalid code"}, status=400)
+    if otp.expires_at < now():
+        return JsonResponse({"error": "Code expired"}, status=400)
+
+    otp.is_used = True
+    otp.save()
+    user.is_verified = True
+    user.save()
+    return JsonResponse({"message": "Email verified"}, status=200)
+
 
 @csrf_exempt
 def login_view(request):
-    """
-    Login endpoint:
-    - Authenticates user
-    - Returns JWT token, role, and onboarding status
-    - Handles missing UserProfile gracefully
-    """
     if request.method != "POST":
-        return JsonResponse({"error": "Only POST allowed"}, status=405)
+        return JsonResponse({"error": "Method not allowed"}, status=405)
 
     try:
         data = json.loads(request.body.decode("utf-8"))
-        email = data.get("email")
-        password = data.get("password")
+    except Exception:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
 
-        # Authenticate user
-        user = authenticate(request, username=email, password=password)
-        if user is None:
-            return JsonResponse({"error": "Invalid credentials"}, status=401)
+    username = data.get("username")
+    email = data.get("email")
+    password = data.get("password")
 
-        # Generate JWT token
-        payload = {
-            "user_id": user.id,
-            "email": user.email,
-            "exp": datetime.utcnow() + timedelta(hours=24),
-        }
-        token = jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
+    if not all([username, email, password]):
+        return JsonResponse({"error": "Missing email, username, or password"}, status=400)
 
-        # Handle missing profile gracefully
-        try:
-            onboarding_completed = user.profile.onboarding_completed
-        except UserProfile.DoesNotExist:
-            onboarding_completed = False
+    try:
+        user = CustomUser.objects.get(username=username, email=email,)
+    except CustomUser.DoesNotExist:
+        return JsonResponse({"error": "Invalid credentials"}, status=401)
 
-        return JsonResponse({
-            "token": token,
-            "role": user.role,
-            "onboarding_completed": onboarding_completed
-        })
+    if not user.check_password(password):
+        return JsonResponse({"error": "Invalid credentials"}, status=401)
 
-    except json.JSONDecodeError:
-        return JsonResponse({"error": "Invalid JSON body"}, status=400)
-    except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
-    
+    if not user.is_verified:
+        return JsonResponse({"error": "Email not verified"}, status=403)
+
+    token = issue_jwt(user)
+
+    return JsonResponse({
+        "token": token,
+        "id": user.id,
+        "role": user.role,
+        "username": user.username,
+        "email": user.email,
+        "avatar_initial": user.username[0].upper()
+    }, status=200)
+
+# Password Reset
 @csrf_exempt
-def submit_onboarding(request):
+def forgot_password(request):
     if request.method != "POST":
-        return JsonResponse({"error": "Only POST allowed"}, status=405)
-
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    data = _json(request) or {}
+    email = data.get("email")
+    if not email:
+        return JsonResponse({"error": "Email required"}, status=400)
     try:
-        data = json.loads(request.body.decode("utf-8"))
-        token = request.headers.get("Authorization", "").replace("Bearer ", "")
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
-        user_id = payload.get("user_id")
+        user = CustomUser.objects.get(email=email)
+    except CustomUser.DoesNotExist:
+        return JsonResponse({"message": "If the email exists, an OTP was sent"}, status=200)
 
-        # Get or create profile
-        profile, _ = UserProfile.objects.get_or_create(user_id=user_id)
+    latest = _latest_otp(PasswordResetOTP, user)
+    if not _can_resend(latest):
+        remain = RESEND_SECONDS - int((now() - latest.created_at).total_seconds())
+        return JsonResponse({"error": "Resend too soon", "retry_in": remain}, status=429)
 
-        profile.onboarding_completed = True
-        profile.save()
+    code = get_random_string(6, allowed_chars="0123456789")
+    PasswordResetOTP.objects.create(user=user, code=code, expires_at=now() + datetime.timedelta(minutes=10))
+    return JsonResponse({"message": "Reset OTP sent", "otp_preview": code, "resend_after": RESEND_SECONDS}, status=200)
 
-        return JsonResponse({"message": "Onboarding completed"})
-    except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+
+@csrf_exempt
+def verify_reset_otp(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    data = _json(request) or {}
+    email = data.get("email")
+    code = data.get("otp") or data.get("code")
+    if not email or not code:
+        return JsonResponse({"error": "Missing email or code"}, status=400)
+    try:
+        user = CustomUser.objects.get(email=email)
+    except CustomUser.DoesNotExist:
+        return JsonResponse({"error": "User not found"}, status=404)
+
+    otp = PasswordResetOTP.objects.filter(user=user, code=code, is_used=False).order_by("-created_at").first()
+    if not otp:
+        return JsonResponse({"error": "Invalid code"}, status=400)
+    if otp.expires_at < now():
+        return JsonResponse({"error": "Code expired"}, status=400)
+
+    otp.is_used = True
+    otp.save()
+    return JsonResponse({"message": "OTP verified. You can reset password now."}, status=200)
+
+
+@csrf_exempt
+def reset_password(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Method not allowed"}, status=405)
+    data = _json(request) or {}
+    email = data.get("email")
+    new_password = data.get("password")
+    confirm = data.get("confirm_password")
+    if not all([email, new_password, confirm]):
+        return JsonResponse({"error": "Missing fields"}, status=400)
+    if new_password != confirm:
+        return JsonResponse({"error": "Passwords do not match"}, status=400)
+    try:
+        user = CustomUser.objects.get(email=email)
+    except CustomUser.DoesNotExist:
+        return JsonResponse({"error": "User not found"}, status=404)
+    user.password = make_password(new_password)
+    user.save()
+    return JsonResponse({"message": "Password updated"}, status=200)
