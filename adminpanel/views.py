@@ -10,7 +10,7 @@ from django.utils import timezone
 from django.core.paginator import Paginator
 
 from accounts.models import CustomUser, PasswordResetOTP
-from meditation.models import Session
+from meditation.models import Session, Mood, Background, MoodQuestion
 from meditation.mood_questions import get_questions
 from common.decorators import auth_required, role_required
 
@@ -266,91 +266,149 @@ def list_sessions(request):
     }, status=200)
 
 # Backgrounds
+@csrf_exempt
 @auth_required
-@role_required(["admin", "superadmin"])
-def backgrounds(request):
-    if request.method == "GET":
-        files = []
-        # Ensure the backgrounds folder exists
-        root = os.path.join(settings.STATICFILES_DIRS[0], "backgrounds")
-        if not os.path.exists(root):
-            return JsonResponse({"error": "Backgrounds folder not found"}, status=404)
+@role_required(["superadmin", "admin"])
+def list_backgrounds(request):
+    if request.method != "GET":
+        return JsonResponse({"error": "Only GET allowed"}, status=405)
 
-        for f in os.listdir(root):
-            if f.endswith(".mp3"):
-                files.append(f)
+    backgrounds = Background.objects.all().values("id", "name", "audio_file", "created_at")
+    return JsonResponse(list(backgrounds), safe=False, status=200)
 
-        return JsonResponse({"backgrounds": files}, status=200)
+@csrf_exempt
+@auth_required
+@role_required(["superadmin", "admin"])
+def add_background(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST allowed"}, status=405)
 
-    return JsonResponse({"error": "Method not allowed"}, status=405)
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+    except Exception:
+        return JsonResponse({"error": "Invalid or empty JSON body"}, status=400)
+
+    name = data.get("name")
+    audio_file = data.get("audio_file", None)
+
+    if not name:
+        return JsonResponse({"error": "Missing background name"}, status=400)
+
+    # Check for duplicates
+    if Background.objects.filter(name=name).exists():
+        return JsonResponse({"error": f"Background '{name}' already exists"}, status=400)
+
+    background = Background.objects.create(name=name, audio_file=audio_file)
+    return JsonResponse({
+        "message": "Background added successfully",
+        "id": background.id,
+        "name": background.name,
+        "audio_file": background.audio_file.url if background.audio_file else None
+    }, status=201)
+
+
+@csrf_exempt
+@auth_required
+@role_required(["superadmin", "admin"])
+def delete_background(request, background_id):
+    if request.method != "DELETE":
+        return JsonResponse({"error": "Only DELETE allowed"}, status=405)
+
+    try:
+        Background.objects.get(id=background_id).delete()
+        return JsonResponse({"message": "Background deleted"}, status=200)
+    except Background.DoesNotExist:
+        return JsonResponse({"error": "Background not found"}, status=404)
 
 
 # Moods
+@csrf_exempt
 @auth_required
-@role_required(["admin", "superadmin"])
-def moods(request):
-    supported = ["calm", "anxiety", "tired", "stress", "sadness"]
+@role_required(["superadmin", "admin"])
+def list_moods(request):
+    if request.method != "GET":
+        return JsonResponse({"error": "Only GET allowed"}, status=405)
 
-    if request.method == "GET":
-        # Explicit list of supported moods
-        return JsonResponse({"moods": supported}, status=200)
+    moods = Mood.objects.all().values("id", "name", "created_at")
+    return JsonResponse(list(moods), safe=False, status=200)
 
-    if request.method == "POST":
-        data = _json(request) or {}
-        mood = data.get("mood", "").lower()
+@csrf_exempt
+@auth_required
+@role_required(["superadmin", "admin"])
+def add_mood(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST allowed"}, status=405)
 
-        if not mood:
-            return JsonResponse({"error": "Mood required"}, status=400)
-        if mood in supported:
-            return JsonResponse({"error": "Duplicate mood"}, status=400)
+    try:
+        data = json.loads(request.body.decode("utf-8"))
+    except Exception:
+        return JsonResponse({"error": "Invalid or empty JSON body"}, status=400)
 
-        # In a real system, you'd persist new moods in DB. For now, just acknowledge.
-        return JsonResponse({"message": f"Mood '{mood}' added"}, status=201)
+    name = data.get("name")
+    if not name:
+        return JsonResponse({"error": "Missing mood name"}, status=400)
 
-    return JsonResponse({"error": "Method not allowed"}, status=405)
+    mood = Mood.objects.create(name=name)
+    return JsonResponse({
+        "message": "Mood added successfully",
+        "id": mood.id,
+        "name": mood.name
+    }, status=201)
+
+@csrf_exempt
+@auth_required
+@role_required(["superadmin", "admin"])
+def delete_mood(request, mood_id):
+    if request.method != "DELETE":
+        return JsonResponse({"error": "Only DELETE allowed"}, status=405)
+
+    try:
+        Mood.objects.get(id=mood_id).delete()
+        return JsonResponse({"message": "Mood deleted"}, status=200)
+    except Mood.DoesNotExist:
+        return JsonResponse({"error": "Mood not found"}, status=404)
 
 
 # Mood Questions
+@csrf_exempt
 @auth_required
-@role_required(["admin", "superadmin"])
-def mood_questions(request):
-    if request.method == "GET":
-        mood = request.GET.get("mood", "").lower()
-        questions = get_questions(mood)
-        if not questions:
-            return JsonResponse({"error": "Unknown mood"}, status=404)
-        return JsonResponse({"mood": mood, "questions": questions}, status=200)
+@role_required(["superadmin", "admin"])
+def list_mood_questions(request):
+    if request.method != "GET":
+        return JsonResponse({"error": "Only GET allowed"}, status=405)
 
-    if request.method == "POST":
-        data = _json(request) or {}
-        mood = data.get("mood", "").lower()
-        question = data.get("question")
-        options = data.get("options", [])
+    questions = MoodQuestion.objects.all().values("id", "question", "mood_id", "created_at")
+    return JsonResponse(list(questions), safe=False, status=200)
 
-        if not mood or not question or not isinstance(options, list) or not options:
-            return JsonResponse({"error": "Invalid fields"}, status=400)
+@csrf_exempt
+@auth_required
+@role_required(["superadmin", "admin"])
+def add_mood_question(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST allowed"}, status=405)
 
-        # Normally you'd save to DB. Here we just echo back.
-        return JsonResponse({
-            "message": "Question added",
-            "mood": mood,
-            "question": question,
-            "options": options
-        }, status=201)
+    data = json.loads(request.body.decode("utf-8"))
+    mood_id = data.get("mood_id")
+    question = data.get("question")
+    if not mood_id or not question:
+        return JsonResponse({"error": "Missing mood_id or question"}, status=400)
 
-    if request.method == "DELETE":
-        data = _json(request) or {}
-        mood = data.get("mood", "").lower()
-        question = data.get("question")
+    mood = Mood.objects.filter(id=mood_id).first()
+    if not mood:
+        return JsonResponse({"error": "Mood not found"}, status=404)
 
-        if not mood or not question:
-            return JsonResponse({"error": "Invalid fields"}, status=400)
+    MoodQuestion.objects.create(mood=mood, question=question)
+    return JsonResponse({"message": "Question added"}, status=201)
 
-        # Normally you'd remove from DB. Here we just echo back.
-        return JsonResponse({
-            "message": "Question removed",
-            "mood": mood,
-            "question": question
-        }, status=200)
+@csrf_exempt
+@auth_required
+@role_required(["superadmin", "admin"])
+def delete_mood_question(request, question_id):
+    if request.method != "DELETE":
+        return JsonResponse({"error": "Only DELETE allowed"}, status=405)
 
-    return JsonResponse({"error": "Method not allowed"}, status=405)
+    try:
+        MoodQuestion.objects.get(id=question_id).delete()
+        return JsonResponse({"message": "Question deleted"}, status=200)
+    except MoodQuestion.DoesNotExist:
+        return JsonResponse({"error": "Question not found"}, status=404)

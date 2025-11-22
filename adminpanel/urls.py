@@ -2,8 +2,8 @@ from django.urls import path
 from .views import (
     admin_login, admin_forgot_password, admin_verify_reset_otp,
     admin_reset_password, dashboard, list_users, list_admins,
-    add_admin, delete_admin, backgrounds, moods, mood_questions,
-    list_sessions,
+    add_admin, delete_admin, list_backgrounds, add_background, delete_background, list_moods, add_mood,
+    delete_mood, list_mood_questions, add_mood_question, delete_mood_question, list_sessions,
 )
 urlpatterns = [
     path("login", admin_login, name="admin_login"),
@@ -19,7 +19,16 @@ urlpatterns = [
     path("admins/<int:admin_id>/delete", delete_admin, name="delete_admin"),
 
     path("sessions/", list_sessions, name="list_sessions"),
-    path("backgrounds", backgrounds, name="backgrounds"),
-    path("moods", moods, name="moods"),
-    path("mood-questions", mood_questions, name="mood_questions_admin"),
+
+    path("backgrounds", list_backgrounds, name="list_backgrounds"),
+    path("backgrounds/add", add_background, name="add_background"),
+    path("backgrounds/<int:background_id>/delete", delete_background, name="delete_background"),
+    
+    path("moods", list_moods, name="list_moods"),
+    path("moods/add", add_mood, name="add_mood"),
+    path("moods/<int:mood_id>/delete", delete_mood, name="delete_mood"),
+    
+    path("mood-questions", list_mood_questions, name="list_mood_questions"),
+    path("mood-questions/add", add_mood_question, name="add_mood_question"),
+    path("mood-questions/<int:question_id>/delete", delete_mood_question, name="delete_mood_question"),
 ]

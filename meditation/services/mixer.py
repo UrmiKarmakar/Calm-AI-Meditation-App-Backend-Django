@@ -14,7 +14,7 @@ def mix_background(voice_path: str, bg_name: str, session_num: int) -> str:
     logging.info("Voice track length: %.2f sec", len(voice) / 1000.0)
     
     if bg_name:  # background selected
-        bg_path = Path(settings.BASE_DIR) / "static" / "backgrounds" / f"{bg_name}.mp3"
+        bg_path = Path(settings.MEDIA_ROOT) / "backgrounds" / f"{bg_name}.mp3"
         if not bg_path.exists():
             raise FileNotFoundError(f"Background file not found: {bg_path.resolve()}")
 
@@ -26,6 +26,9 @@ def mix_background(voice_path: str, bg_name: str, session_num: int) -> str:
         if len(background) < len(voice):
             loops = (len(voice) // len(background)) + 1
             background *= loops
+
+        mixed = background[:len(voice)].overlay(voice)
+
 
         # Trim background and overlay voice
         mixed = background[:len(voice)].overlay(voice)

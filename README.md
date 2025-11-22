@@ -3,51 +3,42 @@ Calm AI is a modular, AI-powered meditation backend built with Django. It genera
 
 At its core, Calm AI takes a user’s emotional state (like stress, sadness, or calm), a preferred voice (male or female), a background ambiance (like forest or rain), and a few words about how they’re feeling. It then generates a guided meditation script using OpenAI’s language model, converts that script into a soothing voice using ElevenLabs, and overlays it with ambient audio using Pydub. The result is a high-quality .mp3 file that can be streamed or downloaded by a mobile app.
 
-The system is built with modularity in mind. The meditation app contains three key components:
-
-script_generator.py: Uses OpenAI to generate a meditation script based on the user's mood and input.
-
-tts_engine.py: Converts the script into voice using ElevenLabs, handling pauses and emotional tone.
-
-mixer.py: Mixes the voice with a looping background sound (e.g., forest, rain) to create a calming atmosphere.
-
-The Django backend exposes a single API endpoint: POST /api/generate/. This endpoint accepts a JSON payload with the user's mood, voice preference, background sound, and a short description of their current feelings. It returns a JSON response containing the path to the generated audio file and the structured script used to create it.
-
-All generated sessions are saved in meditation/output/, and background audio files are stored in static/backgrounds/. The project uses .env for secure API key management, and the architecture is designed to be easily extendable — you can plug in new voices, moods, or background types with minimal changes.
-
-Calm AI is ideal for wellness apps, mental health tools, or any product that aims to deliver personalized, emotionally intelligent audio experiences. It’s built for clarity, control, and comfort — both for developers and end users.
-
-For Testing: 
-    python manage.py runserver
-
-In Postman:
-Post:  http://127.0.0.1:8000/api/generate/
-In Body :
-{
-  "mood": "sadness",
-  "voice": "male",
-  "background": "ocean",
-  "answers": {
-    "What’s making you feel sad?": "Loneliness",
-    "What helps you feel comforted?": "Connection",
-    "What does your heart need right now?": "Compassion",
-    "What helps you express your emotions?": "Crying",
-    "What’s one kind thing you can say to yourself?": "I’m allowed to feel"
-  }
-}
-
 CalmAI Backend
 - Activate venv and install: pip install -r requirements.txt
 - Migrate: python manage.py makemigrations && python manage.py migrate
 - Run: python manage.py runserver
 
-API:
-- POST /api/auth/register
-- POST /api/auth/verify-otp
-- POST /api/auth/login
-- POST /api/meditation/generate
-- GET  /api/meditation/stats
-- GET  /api/meditation/sessions
-- POST /api/onboarding/submit (optional; empty body means skip)
-- GET  /api/onboarding/profile
-- PUT  /api/onboarding/profile/update
+CalmAI Backend API Documentation
+
+Authentication (/api/auth/):
+POST /api/auth/register → Register a new user account
+POST /api/auth/verify-otp → Verify OTP after registration
+POST /api/auth/login → Login with username/email and password
+
+Onboarding (/api/onboarding/):
+POST /api/onboarding/submit → Submit onboarding answers (optional; empty body skips)
+GET /api/onboarding/profile → Get onboarding profile
+PUT /api/onboarding/profile/update → Update onboarding profile
+
+Meditation (/api/meditation/):
+GET /api/meditation/moods/ → List available moods (sadness, tired, stress, anxiety, calm)
+GET /api/meditation/questions/?mood=<mood> → Get mood-specific questions
+POST /api/meditation/generate/ → Generate a meditation session (script + audio)
+GET /api/meditation/history/ → Get user’s past sessions
+POST /api/meditation/rate/ → Rate a session (1–5) and mark as completed
+GET /api/meditation/stats/ → Get stats: total completed, average rating, rating distribution
+
+Admin Panel (/api/admin/):
+POST /api/admin/login → Admin login
+POST /api/admin/forgot-password → Request password reset OTP
+POST /api/admin/verify-reset-otp → Verify reset OTP
+POST /api/admin/reset-password → Reset admin password
+GET /api/admin/dashboard → Admin dashboard overview
+GET /api/admin/users → List all users
+GET /api/admin/admins → List all admins
+POST /api/admin/admins/add → Add a new admin
+DELETE /api/admin/admins/<id>/delete → Delete an admin
+GET /api/admin/backgrounds → Manage background audio options
+GET /api/admin/moods → Manage moods
+GET /api/admin/mood-questions → Manage mood questions
+GET /api/admin/sessions → List all user sessions with username, average_mood, and session_mood
