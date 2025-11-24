@@ -49,10 +49,20 @@ def submit_onboarding(request):
 def activate_subscription(request):
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
-    profile, _ = UserProfile.objects.get_or_create(user=request.user)
-    profile.subscription_active = True
-    profile.save()
-    return JsonResponse({"message": "Subscription activated. Redirect to Home."}, status=200)
+
+    data = json.loads(request.body.decode("utf-8"))
+    plan = data.get("plan")  # "monthly" or "annual"
+
+    if plan not in ["monthly", "annual"]:
+        return JsonResponse({"error": "Invalid plan type"}, status=400)
+
+    request.user.subscription = plan
+    request.user.save()
+
+    return JsonResponse({
+        "message": "Subscription activated. Redirect to Home.",
+        "plan": plan
+    }, status=200)
 
 @csrf_exempt
 @auth_required

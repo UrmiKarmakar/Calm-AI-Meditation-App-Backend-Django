@@ -16,10 +16,21 @@ class CustomUser(AbstractUser):
         ("admin", "Admin"),
         ("user", "User"),
     )
+
+    SUBSCRIPTION_CHOICES = (
+        ("free", "Free"),
+        ("monthly", "Premium (Monthly)"),
+        ("annual", "Premium (Annual)"),
+    )
+
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default="user")
     is_verified = models.BooleanField(default=False)
     avatar_initial = models.CharField(max_length=1, blank=True)
-    subscription = models.CharField(max_length=20, default="Free")
+    subscription = models.CharField(
+        max_length=20,
+        choices=SUBSCRIPTION_CHOICES,
+        default="free"
+    )
     contact_number = models.CharField(max_length=20, blank=True, null=True)
 
     def save(self, *args, **kwargs):
@@ -29,7 +40,6 @@ class CustomUser(AbstractUser):
 
     def __str__(self):
         return f"{self.username} ({self.role})"
-
 
 class OTPCode(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="otps")

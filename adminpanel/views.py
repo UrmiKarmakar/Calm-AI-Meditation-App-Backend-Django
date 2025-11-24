@@ -92,8 +92,8 @@ def admin_reset_password(request):
         return JsonResponse({"error": "Method not allowed"}, status=405)
     data = _json(request) or {}
     email = data.get("email")
-    pw = data.get("password")
-    cpw = data.get("confirm_password")
+    pw = data.get("new password")
+    cpw = data.get("confirm password")
     if not all([email, pw, cpw]) or pw != cpw:
         return JsonResponse({"error": "Invalid fields"}, status=400)
     try:
@@ -128,16 +128,23 @@ def list_users(request):
     page_number = int(request.GET.get("page", 1))
     users = CustomUser.objects.filter(role="user").order_by("id")
 
-    paginator = Paginator(users, 10)  # 10 users per page
+    paginator = Paginator(users, 10)
     page = paginator.get_page(page_number)
+
+    def format_subscription(user):
+        if user.subscription == "monthly":
+            return "Premium (Monthly)"
+        elif user.subscription == "annual":
+            return "Premium (Annual)"
+        else:
+            return "Free"
 
     user_data = [
         {
             "id": user.id,
             "username": user.username,
             "email": user.email,
-            "subscription": user.subscription
-
+            "subscription": format_subscription(user)
         }
         for user in page.object_list
     ]
@@ -154,7 +161,7 @@ def list_users(request):
 
 # Administrators Management
 @auth_required
-@role_required(["superadmin"])
+@role_required(["admin","superadmin"])
 def list_admins(request):
     page_number = int(request.GET.get("page", 1))
     admins = CustomUser.objects.filter(role__in=["admin", "superadmin"]).order_by("id")
