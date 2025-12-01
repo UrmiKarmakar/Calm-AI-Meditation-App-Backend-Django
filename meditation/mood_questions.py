@@ -75,7 +75,7 @@ def get_questions(mood: str) -> List[Dict[str, List[str]]]:
             }
         ]
 
-    elif mood == "stress":
+    elif mood == "stressed":
         return [
             {
                 "question": "What’s causing stress today?",

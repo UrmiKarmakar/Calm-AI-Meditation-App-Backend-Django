@@ -163,7 +163,8 @@ def generate_script(mood: str, answers: Dict[str, str]) -> List[Dict]:
         raise ValueError("OPENAI_API_KEY is missing or not loaded")
 
     duration = TARGET_MINUTES
-    formatted_answers = "\n".join([f"{q}: {a}" for q, a in answers.items()])
+    formatted_answers = "\n".join([f"Answer {i+1}: {a}" for i, a in enumerate(answers)])
+
     prompt = mood_prompt(mood, formatted_answers)
 
     try:

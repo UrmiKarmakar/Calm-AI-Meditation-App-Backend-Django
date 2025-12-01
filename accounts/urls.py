@@ -1,7 +1,11 @@
 from django.urls import path
 from .views import (
-    register, verify_otp, login_view,
-    forgot_password, verify_reset_otp, reset_password,
+    register,
+    verify_otp,
+    login_view,
+    forgot_password,
+    verify_reset_otp,
+    reset_password,
 )
 
 urlpatterns = [

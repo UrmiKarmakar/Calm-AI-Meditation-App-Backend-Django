@@ -1,106 +1,185 @@
 import json
 import datetime
 from django.http import JsonResponse
-from django.db.models import Count
 from django.utils.timezone import now
-from django.conf import settings
+from django.utils import timezone
 from django.utils.crypto import get_random_string
 from django.views.decorators.csrf import csrf_exempt
-from django.utils import timezone
+from django.contrib.auth.hashers import check_password, make_password
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
+from django.core.mail import send_mail
 from django.core.paginator import Paginator
-
+from meditation.mood_questions import get_questions
 from accounts.models import CustomUser, PasswordResetOTP
 from meditation.models import Session, Mood, Background, MoodQuestion
-from meditation.mood_questions import get_questions
+from common.security_utils import issue_jwt
 from common.decorators import auth_required, role_required
 
+RESEND_SECONDS = 120   # minimum wait before resending OTP
+OTP_EXPIRY_SECONDS = 120  # OTP validity duration in seconds
+
+
+# Helpers
 def _json(request):
+    """Safely parse JSON body from request."""
     try:
-        return json.loads(request.body.decode("utf-8"))
-    except Exception:
-        return None
+        body = request.body.decode("utf-8") if request.body else ""
+        return json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _latest_otp(model, user):
+    """Get the latest unused OTP for a user."""
+    return model.objects.filter(user=user, is_used=False).order_by("-created_at").first()
+
+
+def _can_resend(latest):
+    """Check if enough time has passed to resend OTP."""
+    if not latest:
+        return True
+    delta = (now() - latest.created_at).total_seconds()
+    return delta >= RESEND_SECONDS
+
+
+def _send_otp_email(email: str, subject: str, code: str):
+    """Send OTP email to admin/superadmin."""
+    send_mail(
+        subject=subject,
+        message=f"Your OTP is {code}. It will expire in {OTP_EXPIRY_SECONDS // 60} minutes.",
+        from_email="urmikarmakar16@gmail.com",
+        recipient_list=[email],
+        fail_silently=False,
+    )
+
 
 # Admin Authentication
 @csrf_exempt
 def admin_login(request):
-    from django.contrib.auth.hashers import check_password
+    """Admin/superadmin login with email or username."""
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
-    data = _json(request) or {}
+
+    data = _json(request)
     identifier = data.get("email") or data.get("username")
     password = data.get("password")
+
     if not identifier or not password:
         return JsonResponse({"error": "Missing credentials"}, status=400)
+
     try:
-        user = CustomUser.objects.get(email=identifier) if "@" in identifier else CustomUser.objects.get(username=identifier)
+        if "@" in identifier:
+            user = CustomUser.objects.get(email=identifier)
+        else:
+            user = CustomUser.objects.get(username=identifier)
     except CustomUser.DoesNotExist:
         return JsonResponse({"error": "Invalid credentials"}, status=401)
 
     if user.role not in ["admin", "superadmin"]:
         return JsonResponse({"error": "Forbidden"}, status=403)
+
     if not check_password(password, user.password):
         return JsonResponse({"error": "Invalid credentials"}, status=401)
 
-    from common.jwt_utils import issue_jwt
     token = issue_jwt(user)
-    return JsonResponse({"token": token, "role": user.role, "username": user.username}, status=200)
+    return JsonResponse({
+        "token": token,
+        "role": user.role,
+        "username": user.username,
+        "email": user.email
+    }, status=200)
 
+
+# Admin Password Reset
 @csrf_exempt
 def admin_forgot_password(request):
+    """Send OTP for admin/superadmin password reset."""
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
-    data = _json(request) or {}
+
+    data = _json(request)
     email = data.get("email")
     if not email:
         return JsonResponse({"error": "Email required"}, status=400)
+
     try:
         user = CustomUser.objects.get(email=email, role__in=["admin", "superadmin"])
     except CustomUser.DoesNotExist:
+        # Soft success to avoid user enumeration
         return JsonResponse({"message": "If the email exists, an OTP was sent"}, status=200)
 
-    latest = PasswordResetOTP.objects.filter(user=user, is_used=False).order_by("-created_at").first()
-    RESEND_SECONDS = 60
-    if latest and (now() - latest.created_at).total_seconds() < RESEND_SECONDS:
+    latest = _latest_otp(PasswordResetOTP, user)
+    if not _can_resend(latest):
         remain = RESEND_SECONDS - int((now() - latest.created_at).total_seconds())
         return JsonResponse({"error": "Resend too soon", "retry_in": remain}, status=429)
 
     code = get_random_string(6, allowed_chars="0123456789")
-    PasswordResetOTP.objects.create(user=user, code=code, expires_at=now() + datetime.timedelta(minutes=10))
-    return JsonResponse({"message": "Reset OTP sent", "otp_preview": code, "resend_after": RESEND_SECONDS}, status=200)
+    PasswordResetOTP.objects.create(
+        user=user,
+        code=code,
+        expires_at=now() + datetime.timedelta(seconds=OTP_EXPIRY_SECONDS)
+    )
+    _send_otp_email(email=user.email, subject="Admin Reset OTP", code=code)
+
+    return JsonResponse({"message": "Reset OTP sent", "resend_after": RESEND_SECONDS}, status=200)
+
 
 @csrf_exempt
 def admin_verify_reset_otp(request):
+    """Verify OTP for admin/superadmin password reset."""
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
-    data = _json(request) or {}
+
+    data = _json(request)
     email = data.get("email")
     code = data.get("otp")
+
+    if not email or not code:
+        return JsonResponse({"error": "Missing email or code"}, status=400)
+
     try:
         user = CustomUser.objects.get(email=email, role__in=["admin", "superadmin"])
     except CustomUser.DoesNotExist:
         return JsonResponse({"error": "User not found"}, status=404)
+
     otp = PasswordResetOTP.objects.filter(user=user, code=code, is_used=False).order_by("-created_at").first()
-    if not otp or otp.expires_at < now():
-        return JsonResponse({"error": "Invalid or expired code"}, status=400)
+    if not otp:
+        return JsonResponse({"error": "Invalid code"}, status=400)
+    if otp.expires_at < now():
+        return JsonResponse({"error": "Code expired"}, status=400)
+
     otp.is_used = True
     otp.save()
     return JsonResponse({"message": "OTP verified. You can reset password now."}, status=200)
 
+
 @csrf_exempt
 def admin_reset_password(request):
+    """Reset password for admin/superadmin after OTP verification."""
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
-    data = _json(request) or {}
+
+    data = _json(request)
     email = data.get("email")
-    pw = data.get("new password")
-    cpw = data.get("confirm password")
-    if not all([email, pw, cpw]) or pw != cpw:
-        return JsonResponse({"error": "Invalid fields"}, status=400)
+    pw = data.get("new_password")
+    cpw = data.get("confirm_password")
+
+    if not all([email, pw, cpw]):
+        return JsonResponse({"error": "Missing fields"}, status=400)
+    if pw != cpw:
+        return JsonResponse({"error": "Passwords do not match"}, status=400)
+
     try:
         user = CustomUser.objects.get(email=email, role__in=["admin", "superadmin"])
     except CustomUser.DoesNotExist:
         return JsonResponse({"error": "User not found"}, status=404)
-    from django.contrib.auth.hashers import make_password
+
+    try:
+        validate_password(pw, user=user)
+    except ValidationError as e:
+        return JsonResponse({"error": e.messages}, status=400)
+
     user.password = make_password(pw)
     user.save()
     return JsonResponse({"message": "Password updated"}, status=200)
@@ -121,6 +200,7 @@ def dashboard(request):
         "positive_reviews": positive_reviews
     })
 
+
 # User Management
 @auth_required
 @role_required(["admin", "superadmin"])
@@ -136,8 +216,7 @@ def list_users(request):
             return "Premium (Monthly)"
         elif user.subscription == "annual":
             return "Premium (Annual)"
-        else:
-            return "Free"
+        return "Free"
 
     user_data = [
         {
@@ -159,9 +238,10 @@ def list_users(request):
         }
     })
 
+
 # Administrators Management
 @auth_required
-@role_required(["admin","superadmin"])
+@role_required(["admin", "superadmin"])
 def list_admins(request):
     page_number = int(request.GET.get("page", 1))
     admins = CustomUser.objects.filter(role__in=["admin", "superadmin"]).order_by("id")
@@ -197,12 +277,15 @@ def add_admin(request):
     if request.method != "POST":
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
-    data = json.loads(request.body)
+    data = _json(request) or {}
     email = data.get("email")
     password = data.get("password")
     username = data.get("name")
     contact = data.get("contact_number")
     role = data.get("role", "admin")
+
+    if not all([email, password, username]):
+        return JsonResponse({"error": "Missing required fields"}, status=400)
 
     if CustomUser.objects.filter(email=email).exists():
         return JsonResponse({"error": "Email already exists"}, status=400)
@@ -214,7 +297,8 @@ def add_admin(request):
         role=role,
         contact_number=contact
     )
-    return JsonResponse({"message": "Admin created", "id": admin.id})
+    return JsonResponse({"message": "Admin created", "id": admin.id}, status=201)
+
 
 @csrf_exempt
 @auth_required
@@ -234,6 +318,8 @@ def delete_admin(request, admin_id: int):
     u.delete()
     return JsonResponse({"message": "Admin deleted"}, status=200)
 
+
+# Sessions Management
 @csrf_exempt
 @auth_required
 @role_required(["superadmin", "admin"])
@@ -272,7 +358,8 @@ def list_sessions(request):
         }
     }, status=200)
 
-# Backgrounds
+
+# Backgrounds Management
 @csrf_exempt
 @auth_required
 @role_required(["superadmin", "admin"])
@@ -283,6 +370,7 @@ def list_backgrounds(request):
     backgrounds = Background.objects.all().values("id", "name", "audio_file", "created_at")
     return JsonResponse(list(backgrounds), safe=False, status=200)
 
+
 @csrf_exempt
 @auth_required
 @role_required(["superadmin", "admin"])
@@ -290,18 +378,13 @@ def add_background(request):
     if request.method != "POST":
         return JsonResponse({"error": "Only POST allowed"}, status=405)
 
-    try:
-        data = json.loads(request.body.decode("utf-8"))
-    except Exception:
-        return JsonResponse({"error": "Invalid or empty JSON body"}, status=400)
-
+    data = _json(request) or {}
     name = data.get("name")
-    audio_file = data.get("audio_file", None)
+    audio_file = data.get("audio_file")
 
     if not name:
         return JsonResponse({"error": "Missing background name"}, status=400)
 
-    # Check for duplicates
     if Background.objects.filter(name=name).exists():
         return JsonResponse({"error": f"Background '{name}' already exists"}, status=400)
 
@@ -328,7 +411,7 @@ def delete_background(request, background_id):
         return JsonResponse({"error": "Background not found"}, status=404)
 
 
-# Moods
+# Moods Management
 @csrf_exempt
 @auth_required
 @role_required(["superadmin", "admin"])
@@ -339,6 +422,7 @@ def list_moods(request):
     moods = Mood.objects.all().values("id", "name", "created_at")
     return JsonResponse(list(moods), safe=False, status=200)
 
+
 @csrf_exempt
 @auth_required
 @role_required(["superadmin", "admin"])
@@ -346,11 +430,7 @@ def add_mood(request):
     if request.method != "POST":
         return JsonResponse({"error": "Only POST allowed"}, status=405)
 
-    try:
-        data = json.loads(request.body.decode("utf-8"))
-    except Exception:
-        return JsonResponse({"error": "Invalid or empty JSON body"}, status=400)
-
+    data = _json(request) or {}
     name = data.get("name")
     if not name:
         return JsonResponse({"error": "Missing mood name"}, status=400)
@@ -361,6 +441,7 @@ def add_mood(request):
         "id": mood.id,
         "name": mood.name
     }, status=201)
+
 
 @csrf_exempt
 @auth_required
@@ -376,7 +457,7 @@ def delete_mood(request, mood_id):
         return JsonResponse({"error": "Mood not found"}, status=404)
 
 
-# Mood Questions
+# Mood Questions Management
 @csrf_exempt
 @auth_required
 @role_required(["superadmin", "admin"])
@@ -384,8 +465,19 @@ def list_mood_questions(request):
     if request.method != "GET":
         return JsonResponse({"error": "Only GET allowed"}, status=405)
 
-    questions = MoodQuestion.objects.all().values("id", "question", "mood_id", "created_at")
-    return JsonResponse(list(questions), safe=False, status=200)
+    # Get all moods from DB
+    moods = Mood.objects.all().order_by("id")
+
+    data = []
+    for mood in moods:
+        questions = get_questions(mood.name.lower())  # use your helper
+        data.append({
+            "mood_id": mood.id,
+            "mood_name": mood.name,
+            "questions": questions
+        })
+
+    return JsonResponse({"moods": data}, status=200)
 
 @csrf_exempt
 @auth_required
@@ -394,9 +486,10 @@ def add_mood_question(request):
     if request.method != "POST":
         return JsonResponse({"error": "Only POST allowed"}, status=405)
 
-    data = json.loads(request.body.decode("utf-8"))
+    data = _json(request) or {}
     mood_id = data.get("mood_id")
     question = data.get("question")
+
     if not mood_id or not question:
         return JsonResponse({"error": "Missing mood_id or question"}, status=400)
 
@@ -404,8 +497,16 @@ def add_mood_question(request):
     if not mood:
         return JsonResponse({"error": "Mood not found"}, status=404)
 
-    MoodQuestion.objects.create(mood=mood, question=question)
-    return JsonResponse({"message": "Question added"}, status=201)
+    q = MoodQuestion.objects.create(mood=mood, question=question)
+
+    return JsonResponse({
+        "message": "Question added",
+        "id": q.id,
+        "mood_id": mood.id,
+        "mood_name": mood.name,
+        "question": q.question
+    }, status=201)
+
 
 @csrf_exempt
 @auth_required
@@ -415,7 +516,13 @@ def delete_mood_question(request, question_id):
         return JsonResponse({"error": "Only DELETE allowed"}, status=405)
 
     try:
-        MoodQuestion.objects.get(id=question_id).delete()
-        return JsonResponse({"message": "Question deleted"}, status=200)
+        q = MoodQuestion.objects.get(id=question_id)
+        q.delete()
+        return JsonResponse({
+            "message": "Question deleted",
+            "id": question_id,
+            "question": q.question
+        }, status=200)
     except MoodQuestion.DoesNotExist:
         return JsonResponse({"error": "Question not found"}, status=404)
+    
